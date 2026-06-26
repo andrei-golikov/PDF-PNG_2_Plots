@@ -1,4 +1,5 @@
-﻿
+﻿# FILENAME: detect_polygons_from_image.py
+
 import cv2
 import json
 import math
@@ -30,8 +31,24 @@ PREVIEW_DPI = 600
 APPLY_ROTATE_AND_MIRROR = True
 SVG_STROKE_COLOR = "#ff0000"
 SVG_LINE_WIDTH = 4
-SNAP_TOLERANCE = 12
-EDGE_SNAP_TOLERANCE = 12
+
+# Постобработка топологии.
+#
+# Vertex snap схлопывает только близкие вершины разных полигонов.
+# Значение нужно увеличивать осторожно: слишком широкий допуск может закрыть
+# реальные промежутки между соседними границами.
+SNAP_TOLERANCE = 7
+APPLY_VERTEX_SNAP = True
+
+# Edge snap агрессивнее: вставляет недостающую вершину в близкое ребро соседа,
+# а затем схлопывает её. Это улучшает топологию общих границ, но может создать
+# ложные перемычки через реальные зазоры, поэтому настраивается отдельно.
+APPLY_EDGE_SNAP = True
+
+EDGE_SNAP_TOLERANCE = 6
+EDGE_SNAP_MAX_ANGLE_DEGREES = 10
+EDGE_SNAP_MIN_MASK_RATIO = 0.6
+
 HULL_RECOVERY_EXTENT = 0.35
 HULL_RECOVERY_SOLIDITY = 0.50
 HULL_RECOVERY_AREA_RATIO = 0.003
@@ -269,7 +286,7 @@ def filter_polygon_items(polygon_items, image_width, image_height):
     return selected
 
 
-def snap_shared_vertices(polygons, tolerance=SNAP_TOLERANCE):
+def snap_shared_vertices(polygons, tolerance=SNAP_TOLERANCE, line_mask=None):
     vertices = []
     for polygon_index, polygon in enumerate(polygons):
         source_points = polygon[:-1] if polygon and polygon[0] == polygon[-1] else polygon
@@ -296,6 +313,12 @@ def snap_shared_vertices(polygons, tolerance=SNAP_TOLERANCE):
             if first[0] == second[0]:
                 continue
             if math.hypot(first[2] - second[2], first[3] - second[3]) <= tolerance:
+                if not has_line_mask_support(
+                    line_mask,
+                    [first[2], first[3]],
+                    [second[2], second[3]],
+                ):
+                    continue
                 union(first_index, second_index)
 
     clusters = {}
@@ -304,7 +327,10 @@ def snap_shared_vertices(polygons, tolerance=SNAP_TOLERANCE):
         clusters.setdefault(root, []).append(vertex)
 
     snapped_points = {}
+    snapped_cluster_count = 0
     for cluster in clusters.values():
+        if len(cluster) > 1:
+            snapped_cluster_count += 1
         x = int(round(sum(vertex[2] for vertex in cluster) / len(cluster)))
         y = int(round(sum(vertex[3] for vertex in cluster) / len(cluster)))
         for polygon_index, vertex_index, _, _ in cluster:
@@ -330,6 +356,7 @@ def snap_shared_vertices(polygons, tolerance=SNAP_TOLERANCE):
             deduplicated.append(deduplicated[0])
         snapped_polygons.append(deduplicated)
 
+    print(f"Vertex snap clusters: {snapped_cluster_count}")
     return snapped_polygons
 
 
@@ -353,7 +380,84 @@ def point_to_segment_projection(point, segment_start, segment_end):
     return t, projected_x, projected_y, distance
 
 
-def insert_vertices_on_neighbor_edges(polygons, tolerance=EDGE_SNAP_TOLERANCE):
+def angle_between_lines_degrees(first_dx, first_dy, second_dx, second_dy):
+    first_length = math.hypot(first_dx, first_dy)
+    second_length = math.hypot(second_dx, second_dy)
+    if first_length == 0 or second_length == 0:
+        return None
+
+    cosine = (first_dx * second_dx + first_dy * second_dy) / (
+        first_length * second_length
+    )
+    cosine = max(-1.0, min(1.0, cosine))
+    angle = math.degrees(math.acos(cosine))
+    return min(angle, 180 - angle)
+
+
+def has_collinear_incident_edge(
+    polygon,
+    vertex_index,
+    segment_start,
+    segment_end,
+    max_angle_degrees=EDGE_SNAP_MAX_ANGLE_DEGREES,
+):
+    point = polygon[vertex_index]
+    target_dx = segment_end[0] - segment_start[0]
+    target_dy = segment_end[1] - segment_start[1]
+    neighbor_indexes = (
+        (vertex_index - 1) % len(polygon),
+        (vertex_index + 1) % len(polygon),
+    )
+
+    for neighbor_index in neighbor_indexes:
+        neighbor = polygon[neighbor_index]
+        incident_dx = neighbor[0] - point[0]
+        incident_dy = neighbor[1] - point[1]
+        angle = angle_between_lines_degrees(
+            incident_dx,
+            incident_dy,
+            target_dx,
+            target_dy,
+        )
+        if angle is not None and angle <= max_angle_degrees:
+            return True
+
+    return False
+
+
+def has_line_mask_support(
+    line_mask,
+    first_point,
+    second_point,
+    min_ratio=EDGE_SNAP_MIN_MASK_RATIO,
+):
+    if line_mask is None:
+        return True
+
+    x1, y1 = first_point
+    x2, y2 = second_point
+    sample_count = max(int(math.ceil(math.hypot(x2 - x1, y2 - y1))) + 1, 2)
+    xs = np.linspace(x1, x2, sample_count)
+    ys = np.linspace(y1, y2, sample_count)
+    height, width = line_mask.shape[:2]
+    supported = 0
+
+    for x, y in zip(xs, ys):
+        ix = int(round(x))
+        iy = int(round(y))
+        if ix < 0 or iy < 0 or ix >= width or iy >= height:
+            continue
+        if line_mask[iy, ix] > 0:
+            supported += 1
+
+    return supported / sample_count >= min_ratio
+
+
+def insert_vertices_on_neighbor_edges(
+    polygons,
+    line_mask=None,
+    tolerance=EDGE_SNAP_TOLERANCE,
+):
     open_polygons = [
         polygon[:-1] if polygon and polygon[0] == polygon[-1] else polygon
         for polygon in polygons
@@ -361,7 +465,7 @@ def insert_vertices_on_neighbor_edges(polygons, tolerance=EDGE_SNAP_TOLERANCE):
     insertions = {}
 
     for source_index, source_polygon in enumerate(open_polygons):
-        for source_point in source_polygon:
+        for source_vertex_index, source_point in enumerate(source_polygon):
             best_match = None
             for target_index, target_polygon in enumerate(open_polygons):
                 if source_index == target_index or len(target_polygon) < 2:
@@ -394,6 +498,19 @@ def insert_vertices_on_neighbor_edges(polygons, tolerance=EDGE_SNAP_TOLERANCE):
                     if (
                         distance_to_start <= tolerance
                         or distance_to_end <= tolerance
+                    ):
+                        continue
+                    if not has_collinear_incident_edge(
+                        source_polygon,
+                        source_vertex_index,
+                        segment_start,
+                        segment_end,
+                    ):
+                        continue
+                    if not has_line_mask_support(
+                        line_mask,
+                        source_point,
+                        projected_point,
                     ):
                         continue
                     if best_match is None or distance < best_match[0]:
@@ -450,7 +567,7 @@ def insert_vertices_on_neighbor_edges(polygons, tolerance=EDGE_SNAP_TOLERANCE):
         result.append(deduplicated)
 
     print(f"Edge snap inserted vertices: {inserted_count}")
-    return snap_shared_vertices(result, tolerance)
+    return snap_shared_vertices(result, tolerance, line_mask)
 
 
 def make_stage1_polygon_json(polygons, image_width, image_height):
@@ -561,8 +678,14 @@ def main():
 
     polygon_items = filter_polygon_items(polygon_items, image_width, image_height)
     polygons = [polygon for _, polygon in sorted(polygon_items, reverse=True)]
-    polygons = snap_shared_vertices(polygons)
-    polygons = insert_vertices_on_neighbor_edges(polygons)
+    if APPLY_VERTEX_SNAP:
+        polygons = snap_shared_vertices(
+            polygons,
+            tolerance=SNAP_TOLERANCE,
+            line_mask=thresh,
+        )
+    if APPLY_EDGE_SNAP:
+        polygons = insert_vertices_on_neighbor_edges(polygons, thresh)
 
     fig, ax = plt.subplots()
     cmap = plt.get_cmap("tab20")
