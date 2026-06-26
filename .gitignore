@@ -4,3 +4,4 @@
 *.svg
 polygon.json
 detected_polygons.json
+.get_2d_cell_from_pdf
