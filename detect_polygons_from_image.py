@@ -31,6 +31,7 @@ APPLY_ROTATE_AND_MIRROR = True
 SVG_STROKE_COLOR = "#ff0000"
 SVG_LINE_WIDTH = 4
 SNAP_TOLERANCE = 12
+EDGE_SNAP_TOLERANCE = 12
 HULL_RECOVERY_EXTENT = 0.35
 HULL_RECOVERY_SOLIDITY = 0.50
 HULL_RECOVERY_AREA_RATIO = 0.003
@@ -332,6 +333,126 @@ def snap_shared_vertices(polygons, tolerance=SNAP_TOLERANCE):
     return snapped_polygons
 
 
+def point_to_segment_projection(point, segment_start, segment_end):
+    px, py = point
+    ax, ay = segment_start
+    bx, by = segment_end
+    dx = bx - ax
+    dy = by - ay
+    length_sq = dx * dx + dy * dy
+    if length_sq == 0:
+        return None
+
+    t = ((px - ax) * dx + (py - ay) * dy) / length_sq
+    if t <= 0 or t >= 1:
+        return None
+
+    projected_x = ax + t * dx
+    projected_y = ay + t * dy
+    distance = math.hypot(px - projected_x, py - projected_y)
+    return t, projected_x, projected_y, distance
+
+
+def insert_vertices_on_neighbor_edges(polygons, tolerance=EDGE_SNAP_TOLERANCE):
+    open_polygons = [
+        polygon[:-1] if polygon and polygon[0] == polygon[-1] else polygon
+        for polygon in polygons
+    ]
+    insertions = {}
+
+    for source_index, source_polygon in enumerate(open_polygons):
+        for source_point in source_polygon:
+            best_match = None
+            for target_index, target_polygon in enumerate(open_polygons):
+                if source_index == target_index or len(target_polygon) < 2:
+                    continue
+
+                for segment_index, segment_start in enumerate(target_polygon):
+                    segment_end = target_polygon[
+                        (segment_index + 1) % len(target_polygon)
+                    ]
+                    projection = point_to_segment_projection(
+                        source_point,
+                        segment_start,
+                        segment_end,
+                    )
+                    if projection is None:
+                        continue
+
+                    t, projected_x, projected_y, distance = projection
+                    projected_point = [int(round(projected_x)), int(round(projected_y))]
+                    if distance > tolerance:
+                        continue
+                    distance_to_start = math.hypot(
+                        projected_point[0] - segment_start[0],
+                        projected_point[1] - segment_start[1],
+                    )
+                    distance_to_end = math.hypot(
+                        projected_point[0] - segment_end[0],
+                        projected_point[1] - segment_end[1],
+                    )
+                    if (
+                        distance_to_start <= tolerance
+                        or distance_to_end <= tolerance
+                    ):
+                        continue
+                    if best_match is None or distance < best_match[0]:
+                        best_match = (
+                            distance,
+                            target_index,
+                            segment_index,
+                            t,
+                            projected_point,
+                        )
+
+            if best_match is None:
+                continue
+
+            _, target_index, segment_index, t, projected_point = best_match
+            insertions.setdefault(target_index, {}).setdefault(segment_index, []).append(
+                (t, projected_point)
+            )
+
+    if not insertions:
+        return polygons
+
+    result = []
+    inserted_count = 0
+    for polygon_index, polygon in enumerate(open_polygons):
+        polygon_insertions = insertions.get(polygon_index, {})
+        new_polygon = []
+        for vertex_index, point in enumerate(polygon):
+            if not new_polygon or point != new_polygon[-1]:
+                new_polygon.append(point)
+
+            segment_insertions = polygon_insertions.get(vertex_index, [])
+            seen_points = set()
+            for _, inserted_point in sorted(segment_insertions, key=lambda item: item[0]):
+                key = (inserted_point[0], inserted_point[1])
+                if key in seen_points:
+                    continue
+                seen_points.add(key)
+                if inserted_point != new_polygon[-1]:
+                    new_polygon.append(inserted_point)
+                    inserted_count += 1
+
+        deduplicated = []
+        for point in new_polygon:
+            if not deduplicated or point != deduplicated[-1]:
+                deduplicated.append(point)
+
+        if len(deduplicated) < 3:
+            result.append(polygons[polygon_index])
+            continue
+
+        if deduplicated[0] != deduplicated[-1]:
+            deduplicated.append(deduplicated[0])
+        result.append(deduplicated)
+
+    print(f"Edge snap inserted vertices: {inserted_count}")
+    return snap_shared_vertices(result, tolerance)
+
+
 def make_stage1_polygon_json(polygons, image_width, image_height):
     center_x = image_width / 2
     center_y = image_height / 2
@@ -441,6 +562,7 @@ def main():
     polygon_items = filter_polygon_items(polygon_items, image_width, image_height)
     polygons = [polygon for _, polygon in sorted(polygon_items, reverse=True)]
     polygons = snap_shared_vertices(polygons)
+    polygons = insert_vertices_on_neighbor_edges(polygons)
 
     fig, ax = plt.subplots()
     cmap = plt.get_cmap("tab20")
@@ -463,9 +585,13 @@ def main():
     ax.set_aspect("equal")
     ax.invert_yaxis()
     ax.axis("off")
-    plt.savefig(OUTPUT_IMAGE, bbox_inches="tight", dpi=PREVIEW_DPI)
-    plt.close()
-    print(f"Preview saved: {OUTPUT_IMAGE}")
+    try:
+        plt.savefig(OUTPUT_IMAGE, bbox_inches="tight", dpi=PREVIEW_DPI)
+        print(f"Preview saved: {OUTPUT_IMAGE}")
+    except PermissionError:
+        print(f"Could not save preview: {OUTPUT_IMAGE} is locked or not writable.")
+    finally:
+        plt.close()
 
     if save_svg_grid(polygons, image_width, image_height, OUTPUT_SVG):
         print(f"SVG grid saved: {OUTPUT_SVG}")
