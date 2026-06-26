@@ -1,0 +1,5 @@
+opencv-python
+matplotlib
+numpy
+pdf2image
+Pillow

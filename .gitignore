@@ -1,0 +1,6 @@
+*.pdf
+*.png
+*.jpg
+*.svg
+polygon.json
+detected_polygons.json
