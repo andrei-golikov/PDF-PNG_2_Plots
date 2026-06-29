@@ -13,6 +13,20 @@ OUTPUT_IMAGE = "output_detected.png"
 OUTPUT_JSON = "polygon.json"
 OUTPUT_RAW_JSON = "detected_polygons.json"
 OUTPUT_SVG = "polygon_grid.svg"
+FALLBACK_NUMBER_WIDTH = 3
+STAGE1_FIELD_ORDER = (
+    "adres",
+    "id",
+    "idtur",
+    "kadastr",
+    "kadastrurl",
+    "names",
+    "number",
+    "price",
+    "size",
+    "status",
+    "coordinates",
+)
 MIN_AREA = 5000
 APPROX_EPSILON_COEFF = 0.002
 MIN_AREA_RATIO = 0.0009
@@ -29,6 +43,7 @@ POLYGON_ALPHA = 0.35
 POLYGON_LINE_WIDTH = 0.6
 PREVIEW_DPI = 600
 APPLY_ROTATE_AND_MIRROR = True
+INVERT_OUTPUT_Y = True
 SVG_STROKE_COLOR = "#ff0000"
 SVG_LINE_WIDTH = 4
 
@@ -578,13 +593,13 @@ def make_stage1_polygon_json(polygons, image_width, image_height):
     for i, polygon in enumerate(polygons):
         shifted = [(x - center_x, y - center_y) for x, y in polygon]
         if APPLY_ROTATE_AND_MIRROR:
-            transformed = [[round(y, 6), round(x, 6)] for x, y in shifted]
+            transformed = [[round(-y if INVERT_OUTPUT_Y else y, 6), round(x, 6)] for x, y in shifted]
         else:
-            transformed = [[round(x, 6), round(y, 6)] for x, y in shifted]
+            transformed = [[round(x, 6), round(-y if INVERT_OUTPUT_Y else y, 6)] for x, y in shifted]
 
         number = str(i + 1)
         idtur = number.zfill(5)
-        result_data.append({
+        item = {
             "adres": "",
             "id": i + 1,
             "idtur": idtur,
@@ -596,9 +611,42 @@ def make_stage1_polygon_json(polygons, image_width, image_height):
             "size": "",
             "status": "sale",
             "coordinates": [transformed],
-        })
+        }
+        result_data.append(normalize_stage1_item(item, i + 1))
 
     return {"inc": len(result_data), "data": result_data}
+
+
+def normalize_stage1_item(item, fallback_id):
+    fallback_number = str(fallback_id).zfill(FALLBACK_NUMBER_WIDTH)
+    number = str(item.get("number") or "").strip()
+    if not number:
+        number = fallback_number
+
+    idtur = str(item.get("idtur") or "").strip()
+    if not idtur:
+        idtur = number.zfill(5)
+
+    names = str(item.get("names") or "").strip()
+    if not names:
+        names = number
+
+    item["number"] = number
+    item["idtur"] = idtur
+    item["names"] = names
+    return {key: item[key] for key in STAGE1_FIELD_ORDER}
+
+
+def save_stage1_polygon_json(payload, filename):
+    try:
+        with open(filename, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except PermissionError:
+        print(f"Could not save polygon JSON: {filename} is locked or not writable.")
+        return False
+
+    return True
 
 
 def save_svg_grid(polygons, image_width, image_height, filename):
@@ -725,17 +773,11 @@ def main():
     except PermissionError:
         print(f"Could not save raw JSON: {OUTPUT_RAW_JSON} is locked or not writable.")
 
-    try:
-        with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-            json.dump(
-                make_stage1_polygon_json(polygons, image_width, image_height),
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
+    if save_stage1_polygon_json(
+        make_stage1_polygon_json(polygons, image_width, image_height),
+        OUTPUT_JSON,
+    ):
         print(f"Polygon JSON saved: {OUTPUT_JSON}")
-    except PermissionError:
-        print(f"Could not save polygon JSON: {OUTPUT_JSON} is locked or not writable.")
 
 if __name__ == "__main__":
     main()
