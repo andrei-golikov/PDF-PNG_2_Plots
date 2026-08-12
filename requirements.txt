@@ -2,4 +2,5 @@ opencv-python
 matplotlib
 numpy
 pdf2image
+pdfplumber
 Pillow

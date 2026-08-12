@@ -15,7 +15,7 @@ if not pdf_files:
 
 PDF_FILE = pdf_files[0]
 OUTPUT_IMAGE = "page_1.png"
-DPI = 200
+DPI = 800
 POPLER_BIN = r"C:\tools\poppler-24.08.0\Library\bin"  # ← Укажи свой путь здесь
 
 def main():

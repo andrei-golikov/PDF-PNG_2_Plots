@@ -1,5 +1,9 @@
 ﻿# FILENAME: detect_polygons_from_image.py
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import cv2
 import json
 import math
@@ -29,11 +33,11 @@ STAGE1_FIELD_ORDER = (
 )
 MIN_AREA = 5000
 APPROX_EPSILON_COEFF = 0.002
-MIN_AREA_RATIO = 0.0009
-MAX_AREA_RATIO = 0.04
+MIN_AREA_RATIO = 0.00025
+MAX_AREA_RATIO = 0.001
 PAGE_MARGIN_RATIO = 0.003
-TOP_DECORATION_Y_RATIO = 0.12
-LEGEND_X_RATIO = 0.62
+TOP_DECORATION_Y_RATIO = 0.0
+LEGEND_X_RATIO = 2.0
 LEGEND_Y_RATIO = 0.28
 MIN_NOISE_EXTENT = 0.08
 MIN_NOISE_SOLIDITY = 0.20
@@ -42,6 +46,8 @@ MAX_MERGED_CONTOUR_EXTENT = 0.35
 POLYGON_ALPHA = 0.35
 POLYGON_LINE_WIDTH = 0.6
 PREVIEW_DPI = 600
+PREVIEW_LABELS = True
+PREVIEW_LABEL_FONT_SIZE = 2.2
 APPLY_ROTATE_AND_MIRROR = True
 INVERT_OUTPUT_Y = True
 SVG_STROKE_COLOR = "#ff0000"
@@ -72,6 +78,7 @@ HATCH_KERNEL_SIZE = 31
 HATCH_KERNEL_LENGTH = 25
 HATCH_GRAY_MIN = 120
 HATCH_GRAY_MAX = 210
+APPLY_HATCH_REMOVAL = False
 GRAY_FILL_SAT_MAX = 80
 GRAY_FILL_MIN = 125
 GRAY_FILL_MAX = 245
@@ -691,7 +698,8 @@ def main():
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     image_height, image_width = gray.shape[:2]
     _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
-    thresh = remove_hatching(thresh, gray)
+    if APPLY_HATCH_REMOVAL:
+        thresh = remove_hatching(thresh, gray)
     thresh = remove_gray_fill(thresh, img, gray)
 
     contours, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -748,6 +756,21 @@ def main():
             linewidth=POLYGON_LINE_WIDTH,
             alpha=POLYGON_ALPHA,
         )
+        if PREVIEW_LABELS:
+            contour = np.array(polygon, dtype=np.int32)
+            moments = cv2.moments(contour)
+            if moments["m00"]:
+                center_x = moments["m10"] / moments["m00"]
+                center_y = moments["m01"] / moments["m00"]
+                ax.text(
+                    center_x,
+                    center_y,
+                    str(id_counter + 1),
+                    ha="center",
+                    va="center",
+                    fontsize=PREVIEW_LABEL_FONT_SIZE,
+                    color="black",
+                )
 
     if not polygons:
         print("No polygons passed the filter.")
