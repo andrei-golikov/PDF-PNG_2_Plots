@@ -2,6 +2,5 @@
 *.png
 *.jpg
 *.svg
-polygon.json
-detected_polygons.json
+*.json
 .get_2d_cell_from_pdf
